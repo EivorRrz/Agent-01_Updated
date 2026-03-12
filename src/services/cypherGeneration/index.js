@@ -5,6 +5,7 @@
 
 import { callLLM, extractCypher } from '../../utils/llm.js';
 import { logger } from '../../utils/logger.js';
+import config from '../../config/index.js';
 import ChunkCypherResult from '../../models/ChunkCypherResult.js';
 import DocumentChunk from '../../models/DocumentChunk.js';
 import Schema from '../../models/Schema.js';
@@ -12,11 +13,6 @@ import Document from '../../models/Document.js';
 import { detectDocumentType, getDocumentTypePrompts } from '../../utils/documentTypeDetector.js';
 import { retryWithBackoff, isRetryableError } from '../../utils/retry.js';
 import { formatStructuredCypher } from '../../utils/formatCypher.js';
-
-const CYPHER_MODEL_PROVIDER = process.env.CYPHER_MODEL_PROVIDER || 'ollama';
-const TEXT2CYPHER_MODEL_HF = process.env.TEXT2CYPHER_MODEL_HF || 'tomasonjo/text2cypher-demo-16bit';
-const TEXT2CYPHER_MODEL_OLLAMA = process.env.TEXT2CYPHER_MODEL_OLLAMA || 'deepseek-r1:7b';
-const CYPHER_GENERATION_TIMEOUT = parseInt(process.env.CYPHER_GENERATION_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || '900000'); // 15 minutes default
 
 /**
  * Build Cypher generation prompt
@@ -598,15 +594,9 @@ export async function generateCypherForChunk(chunkId) {
   await chunk.updateOne({ status: 'cypher_generating' });
 
   try {
-    const model = CYPHER_MODEL_PROVIDER === 'ollama'
-      ? TEXT2CYPHER_MODEL_OLLAMA
-      : TEXT2CYPHER_MODEL_HF;
-
     logger.info('Generating Cypher for chunk', {
       chunkId,
       chunkIndex: chunk.chunkIndex,
-      provider: CYPHER_MODEL_PROVIDER,
-      model,
       docType
     });
 
@@ -617,13 +607,7 @@ export async function generateCypherForChunk(chunkId) {
     try {
       // Retry LLM call with exponential backoff
       response = await retryWithBackoff(
-        () => callLLM(
-          CYPHER_MODEL_PROVIDER,
-          model,
-          prompt,
-          systemPrompt,
-          { temperature: 0.1, max_new_tokens: 1024, timeout: CYPHER_GENERATION_TIMEOUT }
-        ),
+        () => callLLM(prompt, systemPrompt, { temperature: 0.1, maxTokens: 1024 }),
         {
           maxRetries: 3,
           initialDelay: 2000,
@@ -635,9 +619,7 @@ export async function generateCypherForChunk(chunkId) {
     } catch (llmError) {
       logger.error('LLM call failed after retries', {
         chunkId,
-        error: llmError.message,
-        provider: CYPHER_MODEL_PROVIDER,
-        model
+        error: llmError.message
       });
       throw llmError;
     }
@@ -687,13 +669,7 @@ export async function generateCypherForChunk(chunkId) {
       });
       const retryPrompt = `${prompt}\n\nIMPORTANT: Generate Cypher MERGE statements now.`;
       response = await retryWithBackoff(
-        () => callLLM(
-          CYPHER_MODEL_PROVIDER,
-          model,
-          retryPrompt,
-          systemPrompt,
-          { temperature: 0.1, max_new_tokens: 1024, timeout: CYPHER_GENERATION_TIMEOUT }
-        ),
+        () => callLLM(retryPrompt, systemPrompt, { temperature: 0.1, maxTokens: 1024 }),
         {
           maxRetries: 1,
           initialDelay: 1000,
@@ -731,8 +707,8 @@ export async function generateCypherForChunk(chunkId) {
       chunkId: chunk._id,
       generatedCypher: trimmedCypher, // Use trimmed version
       status: 'generated',
-      generationModel: model,
-      generationProvider: CYPHER_MODEL_PROVIDER
+      generationModel: config.azure.deploymentName,
+      generationProvider: 'azure'
     });
 
     if (!existing) {
@@ -783,8 +759,8 @@ export async function generateCypherForChunk(chunkId) {
           generatedCypher: '-- ERROR: No Cypher generated --',
           status: 'error',
           error: error.message,
-          generationModel: CYPHER_MODEL_PROVIDER === 'ollama' ? TEXT2CYPHER_MODEL_OLLAMA : TEXT2CYPHER_MODEL_HF,
-          generationProvider: CYPHER_MODEL_PROVIDER
+          generationModel: config.azure.deploymentName,
+          generationProvider: 'azure'
         });
         await errorResult.save();
         logger.info('Error result saved', { chunkId });
@@ -848,15 +824,8 @@ export async function generateCypherForFullDocument(docId) {
   const prompt = buildCypherPrompt(schema, documentText, docType);
   const systemPrompt = 'You are a Cypher query generation expert. Generate complete, valid Neo4j Cypher MERGE statements for the ENTIRE document. Output Cypher code only, no markdown, no explanations. Include ALL nodes and relationships from the document.';
 
-  // Determine model
-  const model = CYPHER_MODEL_PROVIDER === 'ollama'
-    ? TEXT2CYPHER_MODEL_OLLAMA
-    : TEXT2CYPHER_MODEL_HF;
-
   logger.info('Generating Cypher for full document', {
     docId,
-    provider: CYPHER_MODEL_PROVIDER,
-    model,
     textLength: documentText.length,
     nodeCount: Object.keys(schema.nodes).length,
     relationshipCount: schema.relationships.length
@@ -866,13 +835,7 @@ export async function generateCypherForFullDocument(docId) {
   let response;
   try {
     response = await retryWithBackoff(
-      () => callLLM(
-        CYPHER_MODEL_PROVIDER,
-        model,
-        prompt,
-        systemPrompt,
-        { temperature: 0.1, max_new_tokens: 8192, timeout: CYPHER_GENERATION_TIMEOUT }
-      ),
+      () => callLLM(prompt, systemPrompt, { temperature: 0.1, maxTokens: 8192 }),
       {
         maxRetries: 3,
         initialDelay: 2000,
@@ -884,9 +847,7 @@ export async function generateCypherForFullDocument(docId) {
   } catch (llmError) {
     logger.error('LLM call failed after retries', {
       docId,
-      error: llmError.message,
-      provider: CYPHER_MODEL_PROVIDER,
-      model
+      error: llmError.message
     });
     throw llmError;
   }

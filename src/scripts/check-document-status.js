@@ -136,10 +136,10 @@ async function checkDocumentStatus(filename) {
     if (doc.status !== 'completed') {
       console.log(`\n💡 Troubleshooting:`);
       if (!schema) {
-        console.log('  - Schema extraction failed - check LLM API (HF_API_KEY or Ollama)');
+        console.log('  - Schema extraction failed - check Azure OpenAI config (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)');
       }
       if (cypherResults.length === 0) {
-        console.log('  - Cypher generation failed - check text2cypher model');
+        console.log('  - Cypher generation failed - check Azure OpenAI config');
       }
       if (doc.error) {
         console.log(`  - Document error: ${doc.error}`);

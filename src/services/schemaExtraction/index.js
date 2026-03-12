@@ -5,15 +5,12 @@
 
 import { callLLM, extractJSON } from '../../utils/llm.js';
 import { logger } from '../../utils/logger.js';
+import config from '../../config/index.js';
 import Document from '../../models/Document.js';
 import Schema from '../../models/Schema.js';
 import { detectDocumentType, getDocumentTypePrompts } from '../../utils/documentTypeDetector.js';
 import { retryWithBackoff, isRetryableError } from '../../utils/retry.js';
 import { REFERENCE_BPM_SCHEMA } from '../../config/reference-schema.js';
-
-const SCHEMA_MODEL_PROVIDER = process.env.SCHEMA_MODEL_PROVIDER || process.env.LLM_PROVIDER || 'ollama';
-const SCHEMA_MODEL = process.env.SCHEMA_MODEL || 'deepseek-r1:7b';
-const SCHEMA_EXTRACTION_TIMEOUT = parseInt(process.env.SCHEMA_EXTRACTION_TIMEOUT_MS || process.env.OLLAMA_TIMEOUT_MS || '900000'); // 15 minutes default
 
 /**
  * Build schema extraction prompt
@@ -213,23 +210,9 @@ export async function extractSchema(docId) {
 
   // Call LLM with retry logic
   const extractSchemaWithRetry = async () => {
-    logger.info('Calling schema extraction LLM', {
-      docId,
-      provider: SCHEMA_MODEL_PROVIDER,
-      model: SCHEMA_MODEL,
-      timeoutMs: SCHEMA_EXTRACTION_TIMEOUT
-    });
+    logger.info('Calling Azure OpenAI for schema extraction', { docId });
 
-    const response = await callLLM(
-      SCHEMA_MODEL_PROVIDER,
-      SCHEMA_MODEL,
-      prompt,
-      systemPrompt,
-      {
-        temperature: 0.1,
-        timeout: SCHEMA_EXTRACTION_TIMEOUT
-      }
-    );
+    const response = await callLLM(prompt, systemPrompt, { temperature: 0.1 });
 
     logger.info('Schema extraction LLM response received', {
       docId,
@@ -275,8 +258,8 @@ export async function extractSchema(docId) {
       nodes: schema.nodes,
       relationships: schema.relationships,
       rawResponse: null, // Don't store raw response to save space
-      extractionModel: SCHEMA_MODEL,
-      extractionProvider: SCHEMA_MODEL_PROVIDER
+      extractionModel: config.azure.deploymentName,
+      extractionProvider: 'azure'
     });
 
     await schemaDoc.save();
@@ -303,8 +286,8 @@ export async function extractSchema(docId) {
         nodes: {},
         relationships: [],
         rawResponse: `ERROR: ${error.message}`,
-        extractionModel: SCHEMA_MODEL,
-        extractionProvider: SCHEMA_MODEL_PROVIDER
+        extractionModel: config.azure.deploymentName,
+        extractionProvider: 'azure'
       });
       await errorSchema.save();
     } catch (saveError) {

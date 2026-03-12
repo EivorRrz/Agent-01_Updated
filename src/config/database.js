@@ -11,20 +11,52 @@ import { logger } from '../utils/logger.js';
 // MongoDB connection
 let mongoClient = null;
 
+const LOCAL_MONGODB_URI = 'mongodb://localhost:27017/document-graph-pipeline';
+
 export async function connectMongoDB() {
   if (mongoClient) {
     return mongoClient;
   }
 
-  const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017/document-graph-pipeline';
+  // Use local MongoDB when Atlas is unreachable (network/firewall/querySrv issues)
+  const useLocal = process.env.MONGODB_USE_LOCAL === 'true' || process.env.MONGODB_USE_LOCAL === '1';
+  const uri = useLocal
+    ? LOCAL_MONGODB_URI
+    : (process.env.MONGODB_URI || LOCAL_MONGODB_URI);
 
-  try {
-    mongoClient = await mongoose.connect(uri);
-    logger.info('MongoDB connected', { uri: uri.replace(/\/\/.*@/, '//***@') });
-    return mongoClient;
-  } catch (error) {
-    logger.error('MongoDB connection error', { error: error.message });
-    throw error;
+  const maxRetries = parseInt(process.env.MONGODB_CONNECT_RETRIES || '2', 10) || 2;
+  const retryDelayMs = parseInt(process.env.MONGODB_CONNECT_RETRY_DELAY_MS || '3000', 10) || 3000;
+
+  const connectOptions = {
+    serverSelectionTimeoutMS: 15000,
+    connectTimeoutMS: 15000,
+  };
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    try {
+      mongoClient = await mongoose.connect(uri, connectOptions);
+      logger.info('MongoDB connected', {
+        uri: uri.replace(/\/\/.*@/, '//***@'),
+        mode: useLocal ? 'local' : 'atlas',
+      });
+      return mongoClient;
+    } catch (error) {
+      logger.error('MongoDB connection error', {
+        attempt,
+        maxAttempts: maxRetries + 1,
+        error: error.message,
+      });
+      if (attempt <= maxRetries) {
+        logger.info(`Retrying in ${retryDelayMs / 1000}s...`);
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+      } else {
+        const isSrvError = error.message.includes('ECONNREFUSED') || error.message.includes('querySrv');
+        const hint = isSrvError
+          ? `Atlas unreachable (network/firewall). Set MONGODB_USE_LOCAL=true and run: docker run -d -p 27017:27017 --name mongo mongo:latest`
+          : '';
+        throw new Error(`MongoDB connection failed after ${maxRetries + 1} attempts. ${hint} ${error.message}`);
+      }
+    }
   }
 }
 
@@ -37,7 +69,7 @@ export function getNeo4jDriver() {
   }
 
   const uri = process.env.NEO4J_URI || 'bolt://localhost:7687';
-  const user = process.env.NEO4J_USER || 'neo4j';
+  const user = process.env.NEO4J_USER || process.env.NEO4J_USERNAME || 'neo4j';
   const password = process.env.NEO4J_PASSWORD;
 
   if (!password) {

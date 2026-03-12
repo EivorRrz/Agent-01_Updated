@@ -62,7 +62,7 @@ async function testPipeline(documentPath) {
     const startTime = Date.now();
     
     const result = await runPipeline(doc._id.toString(), {
-      useLlamaParse: !!process.env.LLAMAPARSE_API_KEY,
+      useLlamaParse: false,
       createNeo4jConstraints: true
     });
 

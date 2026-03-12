@@ -1,16 +1,18 @@
 /**
  * File Watcher Script
  * Monitors a folder and automatically processes files when dropped
- * 
+ * Uses file storage (no MongoDB) + agentic pipeline
+ *
  * Usage: node src/scripts/file-watcher.js
+ *
+ * Env:
+ *   WATCH_FOLDER     - Folder to watch (default: ./watch)
+ *   WATCH_USE_AGENT  - Use agentic AI mode (default: true)
  */
 
-// IMPORTANT: Load environment variables FIRST before any other imports
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Set NODE_TLS_REJECT_UNAUTHORIZED early if DISABLE_SSL_VERIFICATION is set
-// This must be done before any HTTPS requests are made
 if (process.env.DISABLE_SSL_VERIFICATION === 'true' || process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 }
@@ -19,9 +21,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import chokidar from 'chokidar';
-import { connectMongoDB, getNeo4jDriver } from '../config/database.js';
-import Document from '../models/Document.js';
-import { runPipeline } from '../services/orchestrator.js';
+import { ensureDataDir, createDocument } from '../storage/fileStorage.js';
+import { getNeo4jDriver } from '../config/database.js';
+import { runPipeline } from '../pipeline/orchestrator.js';
+import { runDocumentAgent } from '../agent/documentAgent.js';
 import { logger } from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,45 +33,34 @@ const __dirname = path.dirname(__filename);
 const WATCH_FOLDER = process.env.WATCH_FOLDER || path.join(process.cwd(), 'watch');
 const PROCESSED_FOLDER = path.join(WATCH_FOLDER, 'processed');
 const ERROR_FOLDER = path.join(WATCH_FOLDER, 'error');
+const USE_AGENT = process.env.WATCH_USE_AGENT !== 'false';
 
-// Allowed file extensions
 const ALLOWED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt'];
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
-/**
- * Get MIME type from file extension
- */
 function getMimeType(filename) {
   const ext = path.extname(filename).toLowerCase();
   const mimeTypes = {
     '.pdf': 'application/pdf',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.doc': 'application/msword',
-    '.txt': 'text/plain'
+    '.txt': 'text/plain',
   };
   return mimeTypes[ext] || 'application/octet-stream';
 }
 
-/**
- * Check if file is valid for processing
- */
 async function isValidFile(filePath) {
   try {
     const stats = await fs.stat(filePath);
-    
-    // Check file size
     if (stats.size > MAX_FILE_SIZE) {
       logger.warn('File too large', { filePath, size: stats.size });
       return false;
     }
-    
-    // Check extension
     const ext = path.extname(filePath).toLowerCase();
     if (!ALLOWED_EXTENSIONS.includes(ext)) {
       logger.warn('Invalid file type', { filePath, ext });
       return false;
     }
-    
     return true;
   } catch (error) {
     logger.error('Error checking file', { filePath, error: error.message });
@@ -76,124 +68,87 @@ async function isValidFile(filePath) {
   }
 }
 
-/**
- * Move file to processed or error folder
- */
 async function moveFile(filePath, success) {
   try {
     const filename = path.basename(filePath);
     const destFolder = success ? PROCESSED_FOLDER : ERROR_FOLDER;
     const destPath = path.join(destFolder, filename);
-    
-    // Ensure destination folder exists
     await fs.mkdir(destFolder, { recursive: true });
-    
-    // Move file
     await fs.rename(filePath, destPath);
     logger.info('File moved', { from: filePath, to: destPath, success });
+    return destPath;
   } catch (error) {
     logger.error('Error moving file', { filePath, error: error.message });
+    return null;
   }
 }
 
-/**
- * Process a file
- */
 async function processFile(filePath) {
   const filename = path.basename(filePath);
   logger.info('Processing file', { filePath, filename });
 
   try {
-    // Validate file
     if (!(await isValidFile(filePath))) {
       await moveFile(filePath, false);
       return;
     }
 
-    // Get file stats
     const stats = await fs.stat(filePath);
     const mimetype = getMimeType(filename);
 
-    // Create document record
-    const doc = new Document({
+    const doc = await createDocument({
       filename,
       mimetype,
       size: stats.size,
       filePath,
-      status: 'uploaded'
     });
 
-    await doc.save();
-    logger.info('Document created', { docId: doc._id, filename });
+    const docId = doc.docId || doc._id;
+    logger.info('Document created', { docId, filename });
 
-    // Run pipeline
-    logger.info('Starting pipeline', { docId: doc._id });
-    const result = await runPipeline(doc._id.toString(), {
-      useLlamaParse: !!process.env.LLAMAPARSE_API_KEY,
-      createNeo4jConstraints: true
-    });
-
-    logger.info('Pipeline completed', { 
-      docId: doc._id, 
-      filename,
-      result 
-    });
-
-    // Move to processed folder
+    // Move file immediately after copy - pipeline uses data/documents/{docId}/original.ext
     await moveFile(filePath, true);
 
+    if (USE_AGENT) {
+      logger.info('Running agentic pipeline', { docId });
+      const { answer } = await runDocumentAgent(
+        `Process document ${docId} and convert to Neo4j graph. Run all steps: parse, extract schema, generate Cypher, ingest.`,
+        docId
+      );
+      logger.info('Agent completed', { docId, answer: answer?.substring(0, 150) });
+    } else {
+      logger.info('Running pipeline', { docId });
+      await runPipeline(docId, {
+        useLlamaParse: false,
+        createNeo4jConstraints: true,
+      });
+    }
   } catch (error) {
-    logger.error('Error processing file', { 
-      filePath, 
-      error: error.message,
-      stack: error.stack
-    });
-    
-    // Move to error folder
-    await moveFile(filePath, false);
+    logger.error('Error processing file', { filePath, error: error.message, stack: error.stack });
+    // Move from processed to error if we already moved it; else move from watch
+    const processedPath = path.join(PROCESSED_FOLDER, path.basename(filePath));
+    try {
+      await fs.access(processedPath);
+      await moveFile(processedPath, false);
+    } catch {
+      await moveFile(filePath, false);
+    }
   }
 }
 
-/**
- * Initialize folders
- */
 async function initializeFolders() {
-  try {
-    await fs.mkdir(WATCH_FOLDER, { recursive: true });
-    await fs.mkdir(PROCESSED_FOLDER, { recursive: true });
-    await fs.mkdir(ERROR_FOLDER, { recursive: true });
-    logger.info('Folders initialized', { 
-      watch: WATCH_FOLDER,
-      processed: PROCESSED_FOLDER,
-      error: ERROR_FOLDER
-    });
-  } catch (error) {
-    logger.error('Error initializing folders', { error: error.message });
-    throw error;
-  }
+  await fs.mkdir(WATCH_FOLDER, { recursive: true });
+  await fs.mkdir(PROCESSED_FOLDER, { recursive: true });
+  await fs.mkdir(ERROR_FOLDER, { recursive: true });
+  logger.info('Folders initialized', { watch: WATCH_FOLDER, processed: PROCESSED_FOLDER, error: ERROR_FOLDER });
 }
 
-/**
- * Process existing files in watch folder
- */
 async function processExistingFiles() {
   try {
-    const files = await fs.readdir(WATCH_FOLDER);
-    const filePaths = [];
-
-    for (const file of files) {
-      const filePath = path.join(WATCH_FOLDER, file);
-      try {
-        const stats = await fs.stat(filePath);
-        // Only process files (not directories) and skip hidden files
-        if (stats.isFile() && !file.startsWith('.')) {
-          filePaths.push(filePath);
-        }
-      } catch (error) {
-        // Skip files that can't be accessed
-        logger.debug('Skipping file', { filePath, error: error.message });
-      }
-    }
+    const entries = await fs.readdir(WATCH_FOLDER, { withFileTypes: true });
+    const filePaths = entries
+      .filter(e => e.isFile() && !e.name.startsWith('.') && e.name !== '.gitkeep')
+      .map(e => path.join(WATCH_FOLDER, e.name));
 
     logger.info('Found existing files', { count: filePaths.length });
 
@@ -205,60 +160,50 @@ async function processExistingFiles() {
   }
 }
 
-/**
- * Start file watcher
- */
 async function startWatcher() {
   try {
-    // Connect to databases
-    await connectMongoDB();
+    await ensureDataDir();
     getNeo4jDriver();
-
-    // Initialize folders
     await initializeFolders();
 
-    logger.info('File watcher started', { watchFolder: WATCH_FOLDER });
+    logger.info('File watcher started', { watchFolder: WATCH_FOLDER, agentMode: USE_AGENT });
+
     console.log('\n========================================');
-    console.log('📁 File Watcher Active');
+    console.log('📁 File Watcher Active (Agentic AI)');
     console.log('========================================');
     console.log(`Watch Folder: ${WATCH_FOLDER}`);
-    console.log(`Processed Folder: ${PROCESSED_FOLDER}`);
-    console.log(`Error Folder: ${ERROR_FOLDER}`);
-    console.log('\nDrop files into the watch folder to process them automatically!');
+    console.log(`Processed: ${PROCESSED_FOLDER}`);
+    console.log(`Error: ${ERROR_FOLDER}`);
+    console.log(`Mode: ${USE_AGENT ? 'Agentic AI' : 'Pipeline'}`);
+    console.log('\nDrop PDF/DOCX/TXT files into the watch folder!');
     console.log('Press Ctrl+C to stop\n');
 
-    // Process existing files
     await processExistingFiles();
 
-    // Watch for new files
     const watcher = chokidar.watch(WATCH_FOLDER, {
-      ignored: /(^|[\/\\])\../, // Ignore dotfiles
+      ignored: [/processed/, /error/, /(^|[\/\\])\../],
       persistent: true,
-      ignoreInitial: false,
+      ignoreInitial: true,
       awaitWriteFinish: {
-        stabilityThreshold: 2000, // Wait 2 seconds after file stops changing
-        pollInterval: 100
-      }
+        stabilityThreshold: 2000,
+        pollInterval: 100,
+      },
     });
 
     watcher
       .on('add', async (filePath) => {
         try {
-          // Only process files directly in watch folder (not subfolders)
           const fileDir = path.dirname(filePath);
           const normalizedFileDir = path.normalize(fileDir);
           const normalizedWatchFolder = path.normalize(WATCH_FOLDER);
-          
-          if (normalizedFileDir === normalizedWatchFolder) {
-            // Skip .gitkeep and other hidden files
-            const filename = path.basename(filePath);
-            if (filename.startsWith('.')) {
-              return;
-            }
-            
-            logger.info('New file detected', { filePath, filename });
-            await processFile(filePath);
-          }
+
+          if (normalizedFileDir !== normalizedWatchFolder) return;
+
+          const filename = path.basename(filePath);
+          if (filename.startsWith('.')) return;
+
+          logger.info('New file detected', { filePath, filename });
+          await processFile(filePath);
         } catch (error) {
           logger.error('Error processing detected file', { filePath, error: error.message });
         }
@@ -267,7 +212,6 @@ async function startWatcher() {
         logger.error('Watcher error', { error: error.message });
       });
 
-    // Handle graceful shutdown
     process.on('SIGINT', async () => {
       logger.info('Stopping file watcher...');
       await watcher.close();
@@ -279,7 +223,6 @@ async function startWatcher() {
       await watcher.close();
       process.exit(0);
     });
-
   } catch (error) {
     logger.error('Failed to start file watcher', { error: error.message });
     process.exit(1);
@@ -287,4 +230,3 @@ async function startWatcher() {
 }
 
 startWatcher();
-

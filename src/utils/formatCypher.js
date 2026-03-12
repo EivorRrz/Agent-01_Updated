@@ -217,13 +217,30 @@ function parseCypher(cypher) {
     const label = nodeMatch[2];
     const props = nodeMatch[3];
     
-    // Extract ID property value
-    const idMatch = props.match(/(\w+Id|id|_id|uuid):\s*["']([^"']+)["']/i);
+    // Extract ID property: prefer {label}Id, id, _id, uuid; fallback to first property
+    let idProp, idValue;
+    let idMatch = props.match(/(\w+Id|id|_id|uuid):\s*["']([^"']+)["']/i);
     if (idMatch) {
-      const idProp = idMatch[1];
-      const idValue = idMatch[2];
+      idProp = idMatch[1];
+      idValue = idMatch[2];
+    } else {
+      // Fallback: use first property with string, number, or date value
+      const firstStr = props.match(/(\w+):\s*["']([^"']+)["']/);
+      const firstNum = props.match(/(\w+):\s*(\d+)/);
+      const firstDate = props.match(/(\w+):\s*date\(["']([^"']+)["']\)/);
+      if (firstStr) {
+        idProp = firstStr[1];
+        idValue = firstStr[2];
+      } else if (firstDate) {
+        idProp = firstDate[1];
+        idValue = firstDate[2];
+      } else if (firstNum) {
+        idProp = firstNum[1];
+        idValue = firstNum[2];
+      }
+    }
+    if (idProp && idValue) {
       const key = `${label}:${idValue}`;
-      
       nodes.push({
         originalVar: varName,
         label,
@@ -232,7 +249,6 @@ function parseCypher(cypher) {
         idValue,
         key
       });
-      
       nodeMap.set(key, varName);
     }
   }

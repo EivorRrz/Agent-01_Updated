@@ -12,11 +12,6 @@ import Schema from '../models/Schema.js';
 
 const router = express.Router();
 
-const CYPHER_MODEL_PROVIDER = process.env.CYPHER_MODEL_PROVIDER || 'ollama';
-const TEXT2CYPHER_MODEL_HF = process.env.TEXT2CYPHER_MODEL_HF || 'tomasonjo/text2cypher-demo-16bit';
-// Use deepseek-r1:7b for Cypher generation (text2cypher model not available in Ollama)
-const TEXT2CYPHER_MODEL_OLLAMA = process.env.TEXT2CYPHER_MODEL_OLLAMA || 'deepseek-r1:7b';
-
 /**
  * Build query prompt for read-only Cypher
  */
@@ -80,20 +75,10 @@ router.post('/', async (req, res) => {
 
     logger.info('Generating query Cypher', { question, docId });
 
-    const model = CYPHER_MODEL_PROVIDER === 'ollama' 
-      ? TEXT2CYPHER_MODEL_OLLAMA 
-      : TEXT2CYPHER_MODEL_HF;
-
     const prompt = buildQueryPrompt(schema, question);
     const systemPrompt = 'You are a Cypher query generation model. Output only valid READ-ONLY Cypher code, no explanations or markdown.';
 
-    const response = await callLLM(
-      CYPHER_MODEL_PROVIDER,
-      model,
-      prompt,
-      systemPrompt,
-      { temperature: 0.1 }
-    );
+    const response = await callLLM(prompt, systemPrompt, { temperature: 0.1 });
 
     const cypher = extractCypher(response);
 

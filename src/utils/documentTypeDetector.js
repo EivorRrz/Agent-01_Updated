@@ -88,8 +88,8 @@ export function getDocumentTypePrompts(docType) {
       cypherHint: 'Pay attention to technical identifiers, version numbers, and system dependencies. Relationships often involve dependencies, integrations, and data flows.'
     },
     legal: {
-      schemaHint: 'Focus on legal entities: parties, contracts, clauses, terms, obligations, and legal relationships.',
-      cypherHint: 'Emphasize party relationships, contract terms, and legal obligations. Use clear identifiers for parties and contracts.'
+      schemaHint: 'Focus on legal entities: parties, contracts, clauses, terms, obligations, and legal relationships. Include unique IDs: contractReference/contractId for Contract, organizationName for Party, productCode for Product.',
+      cypherHint: 'Emphasize party relationships, contract terms, and legal obligations. Use contractReference, organizationName, productCode as MERGE keys.'
     },
     general: {
       schemaHint: 'Extract all relevant entities, their properties, and relationships from the document.',

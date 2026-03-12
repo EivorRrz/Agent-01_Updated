@@ -6,7 +6,6 @@ const SchemaSchema = new mongoose.Schema({
     ref: 'Document',
     required: true,
     unique: true,
-    index: true
   },
   version: {
     type: Number,
@@ -32,8 +31,8 @@ const SchemaSchema = new mongoose.Schema({
   },
   extractionProvider: {
     type: String,
-    enum: ['ollama', 'huggingface'],
-    default: null
+    enum: ['ollama', 'huggingface', 'azure'],
+    default: 'azure'
   }
 }, {
   timestamps: true

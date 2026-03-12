@@ -1,101 +1,63 @@
 /**
- * Utility to save generated Cypher to files
+ * Utility to save generated Cypher - only .cypher file output
  */
 
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { logger } from './logger.js';
 
-const CYPHER_OUTPUT_DIR = process.env.CYPHER_OUTPUT_DIR || './cypher-output';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../data');
+const DOCUMENTS_DIR = path.join(DATA_DIR, 'documents');
+
+const CYPHER_FILENAME = 'generated.cypher';
 
 /**
- * Ensure Cypher output directory exists
- */
-async function ensureCypherOutputDir() {
-  try {
-    await fs.mkdir(CYPHER_OUTPUT_DIR, { recursive: true });
-  } catch (error) {
-    logger.error('Failed to create Cypher output directory', { error: error.message });
-    throw error;
-  }
-}
-
-/**
- * Save Cypher results to files
+ * Save Cypher to the only output: data/documents/{docId}/generated.cypher
  * @param {string} docId - Document ID
- * @param {string} filename - Original document filename
- * @param {Array} cypherResults - Array of Cypher result documents
+ * @param {string|Array} cypherOrResults - Raw Cypher string, or array of {generatedCypher} (legacy)
  * @returns {Promise<string>} - Path to the saved file
  */
-export async function saveCypherToFile(docId, filename, cypherResults) {
-  try {
-    await ensureCypherOutputDir();
-    
-    // Create a safe filename from the original document name
-    const safeFilename = filename
-      .replace(/[^a-zA-Z0-9.-]/g, '_')
-      .replace(/\.[^/.]+$/, ''); // Remove extension
-    
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const outputFilename = `${safeFilename}_${docId}_${timestamp}.cypher`;
-    const outputPath = path.join(CYPHER_OUTPUT_DIR, outputFilename);
-    
-    // Combine all Cypher statements
-    // Check if this is a full document (single result with no chunkId) or chunked
-    const isFullDocument = cypherResults.length === 1 && !cypherResults[0].chunkId;
-    
-    let combinedCypher = `-- Generated Cypher for: ${filename}\n`;
-    combinedCypher += `-- Document ID: ${docId}\n`;
-    combinedCypher += `-- Generated at: ${new Date().toISOString()}\n\n`;
-    
-    if (isFullDocument) {
-      // Full document - output complete Cypher
-      combinedCypher += cypherResults[0].generatedCypher;
-    } else {
-      // Chunked mode - combine all chunks
-      cypherResults.forEach((result, index) => {
-        if (result.error) {
-          combinedCypher += `-- ERROR in result ${index + 1}: ${result.error}\n\n`;
-        } else {
-          combinedCypher += `${result.generatedCypher}\n\n`;
-        }
-      });
+export async function saveCypherToFile(docId, cypherOrResults) {
+  let cypher = typeof cypherOrResults === 'string' ? cypherOrResults : null;
+  if (!cypher && Array.isArray(cypherOrResults) && cypherOrResults.length > 0) {
+    const first = cypherOrResults.find(r => !r.chunkId) || cypherOrResults[0];
+    cypher = first?.generatedCypher || '';
+    if (cypherOrResults.length > 1) {
+      cypher = cypherOrResults.map(r => r.generatedCypher || '').filter(Boolean).join('\n\n');
     }
-    
-    // Final cleanup: Ensure NO HTML entities remain before saving
-    combinedCypher = combinedCypher.replace(/-&gt;/g, '->');
-    combinedCypher = combinedCypher.replace(/-&lt;/g, '<-');
-    combinedCypher = combinedCypher.replace(/&gt;/g, '>');
-    combinedCypher = combinedCypher.replace(/&lt;/g, '<');
-    combinedCypher = combinedCypher.replace(/&amp;gt;/g, '>');
-    combinedCypher = combinedCypher.replace(/&amp;lt;/g, '<');
-    
-    // Save to file
-    await fs.writeFile(outputPath, combinedCypher, 'utf-8');
-    
-    logger.info('Cypher saved to file', { 
-      docId, 
-      filename: outputFilename, 
-      path: outputPath,
-      isFullDocument: isFullDocument
-    });
-    
-    return outputPath;
-  } catch (error) {
-    logger.error('Failed to save Cypher to file', { 
-      docId, 
-      filename, 
-      error: error.message 
-    });
-    throw error;
   }
+  const cypherPath = path.join(DOCUMENTS_DIR, docId, CYPHER_FILENAME);
+  await fs.mkdir(path.dirname(cypherPath), { recursive: true });
+
+  let content = (cypher || '').trim();
+  if (!content) throw new Error('No Cypher to save');
+  content = content.replace(/-&gt;/g, '->').replace(/-&lt;/g, '<-');
+  content = content.replace(/&gt;/g, '>').replace(/&lt;/g, '<');
+  content = content.replace(/&amp;gt;/g, '>').replace(/&amp;lt;/g, '<');
+
+  await fs.writeFile(cypherPath, content, 'utf-8');
+  logger.info('Cypher saved', { docId, path: cypherPath });
+  return cypherPath;
 }
 
 /**
- * Get the Cypher output directory path
- * @returns {string} - Path to Cypher output directory
+ * Get path to generated.cypher for a document
  */
-export function getCypherOutputDir() {
-  return CYPHER_OUTPUT_DIR;
+export function getCypherFilePath(docId) {
+  return path.join(DOCUMENTS_DIR, docId, CYPHER_FILENAME);
+}
+
+/**
+ * Read Cypher from file
+ */
+export async function readCypherFromFile(docId) {
+  try {
+    const p = getCypherFilePath(docId);
+    return await fs.readFile(p, 'utf-8');
+  } catch {
+    return null;
+  }
 }
 

@@ -1,21 +1,28 @@
+# Dependencies
 node_modules/
-.env
-*.log
-uploads/
-dist/
-.DS_Store
-*.pdf
-*.docx
-*.doc
 
-# Watch folder (keep structure, ignore files)
-watch/*.pdf
-watch/*.docx
-watch/*.doc
-watch/*.txt
+# Environment (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Data and outputs
+data/
+cypher-output/
+uploads/
 watch/processed/
 watch/error/
 
-# Cypher output folder
-cypher-output/
+# Logs
+*.log
+npm-debug.log*
 
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

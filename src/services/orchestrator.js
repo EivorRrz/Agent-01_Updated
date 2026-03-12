@@ -17,10 +17,7 @@ import { recordMetrics, recordDocumentCompletion } from './metrics.js';
 import { askYesNo } from '../utils/prompt.js';
 import { saveCypherToFile } from '../utils/saveCypher.js';
 import { formatStructuredCypher } from '../utils/formatCypher.js';
-
-const CYPHER_MODEL_PROVIDER = process.env.CYPHER_MODEL_PROVIDER || 'ollama';
-const TEXT2CYPHER_MODEL_HF = process.env.TEXT2CYPHER_MODEL_HF || 'tomasonjo/text2cypher-demo-16bit';
-const TEXT2CYPHER_MODEL_OLLAMA = process.env.TEXT2CYPHER_MODEL_OLLAMA || 'deepseek-r1:7b';
+import config from '../config/index.js';
 
 /**
  * Run the complete pipeline for a document
@@ -141,8 +138,8 @@ export async function runPipeline(docId, options = {}) {
         chunkId: null, // Explicitly set to null for full document
         generatedCypher: fullCypher,
         status: 'generated',
-        generationModel: CYPHER_MODEL_PROVIDER === 'ollama' ? TEXT2CYPHER_MODEL_OLLAMA : TEXT2CYPHER_MODEL_HF,
-        generationProvider: CYPHER_MODEL_PROVIDER
+        generationModel: config.azure.deploymentName,
+        generationProvider: 'azure'
       };
       
       logger.debug('Creating ChunkCypherResult for full document', { 
@@ -220,7 +217,7 @@ export async function runPipeline(docId, options = {}) {
     });
     
     // Save Cypher to file in codebase folder
-    const cypherFilePath = await saveCypherToFile(docId, doc.filename, cypherResultsDocs);
+    const cypherFilePath = await saveCypherToFile(docId, cypherResultsDocs);
     logger.info('Cypher saved to file', { docId, filePath: cypherFilePath });
     
     // Display generated Cypher (only in interactive mode)

@@ -63,6 +63,19 @@ DOC → Parse → SchemaOnce → Chunk → text2cypher → Cypher → Neo4j
    npm test ./path/to/your/document.pdf
    ```
 
+## Troubleshooting
+
+### MongoDB connection failed (ECONNREFUSED / querySrv)
+
+- **Atlas cluster paused**: Free tier clusters pause after 60 days. Resume at [cloud.mongodb.com](https://cloud.mongodb.com).
+- **Network/firewall**: Corporate networks or VPNs may block MongoDB Atlas. Try from a different network or use local MongoDB.
+- **Use local MongoDB**: Set `MONGODB_URI=mongodb://localhost:27017/document-graph-pipeline` and run MongoDB locally (e.g. via Docker).
+- **Verify cluster hostname**: Ensure `MONGODB_URI` matches your Atlas cluster (e.g. `cluster0.xxxxx.mongodb.net`).
+
+### Duplicate schema index warning
+
+Remove redundant `index: true` from fields that already have `unique: true` or a compound index.
+
 ## API Endpoints
 
 ### Document Management
@@ -183,8 +196,9 @@ See [ENV_SETUP.md](./ENV_SETUP.md) for detailed environment variable configurati
 Key settings:
 - `CHUNK_SIZE_WORDS`: Words per chunk (default: 1000)
 - `CHUNK_OVERLAP_WORDS`: Overlap between chunks (default: 100)
-- `SCHEMA_MODEL_PROVIDER`: `ollama` or `huggingface`
-- `CYPHER_MODEL_PROVIDER`: `ollama` or `huggingface`
+- `AZURE_OPENAI_API_KEY`: Azure OpenAI API key (required)
+- `AZURE_OPENAI_ENDPOINT`: Azure OpenAI endpoint URL (required)
+- `AZURE_OPENAI_DEPLOYMENT_NAME`: Deployment name (default: gpt-4o)
 
 ## Troubleshooting
 
@@ -197,13 +211,13 @@ Key settings:
 - Check `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` in `.env`
 - Run `npm run setup-neo4j` to verify connection
 
-### LLM API Issues
-- **Ollama**: Ensure Ollama is running (`ollama serve`) and models are pulled
-- **Hugging Face**: Verify `HF_API_KEY` is set and valid
-- Check logs for specific API errors
+### LLM API Issues (Azure OpenAI)
+- Verify `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT` are set in `.env`
+- Ensure your Azure OpenAI deployment (e.g., gpt-4o) is active
+- Check logs for rate limits (429) or authentication errors
 
 ### Cypher Generation Issues
 - Check that schema was extracted successfully
-- Verify text2cypher model is accessible
+- Verify Azure OpenAI is configured and accessible
 - Review generated Cypher in MongoDB `ChunkCypherResult` collection
 

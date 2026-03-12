@@ -12,6 +12,27 @@ import Document from '../../models/Document.js';
 import { retryWithBackoff, isRetryableError } from '../../utils/retry.js';
 
 /**
+ * Strip leading block and line comments from Cypher statements.
+ * Enables processing of statements that start with comment blocks.
+ */
+function stripLeadingComments(statement) {
+  let s = statement.trim();
+  // Remove block comments
+  while (s.startsWith('/*')) {
+    const end = s.indexOf('*/', 2);
+    if (end === -1) break;
+    s = s.substring(end + 2).trim();
+  }
+  // Remove line comments at start
+  while (s.startsWith('--')) {
+    const nl = s.indexOf('\n');
+    if (nl === -1) return '';
+    s = s.substring(nl + 1).trim();
+  }
+  return s;
+}
+
+/**
  * Split Cypher into individual statements
  * Handles semicolon-separated statements
  */
@@ -74,6 +95,7 @@ function isSchemaModification(statement) {
 
 /**
  * Separate schema modification statements from write statements
+ * Strips leading comments so statements with leading comment blocks are processed
  * @param {Array<string>} statements - Array of Cypher statements
  * @returns {Object} - { schemaStatements: Array, writeStatements: Array }
  */
@@ -82,13 +104,10 @@ function separateSchemaAndWriteStatements(statements) {
   const writeStatements = [];
 
   for (const statement of statements) {
-    // Skip comments and empty statements
-    const trimmed = statement.trim();
-    if (!trimmed || trimmed.startsWith('--') || trimmed.startsWith('/*')) {
-      continue;
-    }
+    const stripped = stripLeadingComments(statement);
+    if (!stripped) continue;
 
-    if (isSchemaModification(statement)) {
+    if (isSchemaModification(stripped)) {
       schemaStatements.push(statement);
     } else {
       writeStatements.push(statement);
@@ -734,6 +753,82 @@ export async function createConstraints(schema) {
     }
 
     return constraints;
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * Execute Cypher string (no Mongoose - for file storage pipeline)
+ * @param {string} cypher - Raw Cypher to execute
+ * @returns {Promise<{nodesCreated: number, relationshipsCreated: number}>}
+ */
+export async function executeCypherString(cypher) {
+  const statements = splitCypherStatements(cypher);
+  if (statements.length === 0) throw new Error('No valid Cypher statements found');
+
+  const { schemaStatements, writeStatements } = separateSchemaAndWriteStatements(statements);
+
+  // Validate combined write (relationship MERGEs reference variables from node MERGEs)
+  const combinedWrite = writeStatements.length > 0 ? writeStatements.join('\n') : '';
+  if (combinedWrite) {
+    const validationSession = getNeo4jSession(neo4j.session.READ);
+    try {
+      const validationResult = await validateCypher(combinedWrite, validationSession);
+      if (!validationResult.valid) {
+        await validationSession.close();
+        throw new Error(`Cypher validation failed: ${validationResult.error}`);
+      }
+    } finally {
+      await validationSession.close();
+    }
+  }
+
+  if (schemaStatements.length > 0) {
+    const schemaSession = getNeo4jSession(neo4j.session.WRITE);
+    try {
+      for (const stmt of schemaStatements) {
+        try {
+          await schemaSession.run(stmt);
+        } catch (e) {
+          const msg = (e.message || '').toLowerCase();
+          if (!msg.includes('already exists') && !msg.includes('equivalent') && !msg.includes('duplicate')) {
+            logger.warn('Schema statement failed', { error: e.message });
+          }
+        }
+      }
+    } finally {
+      await schemaSession.close();
+    }
+  }
+
+  if (writeStatements.length === 0) return { nodesCreated: 0, relationshipsCreated: 0 };
+
+  const session = getNeo4jSession(neo4j.session.WRITE);
+  const tx = session.beginTransaction();
+  let nodesCreated = 0;
+  let relationshipsCreated = 0;
+
+  try {
+    const result = await tx.run(combinedWrite);
+    const summary = result.summary;
+    if (summary?.counters) {
+      const s = summary.counters;
+      // Driver v5+: counters.updates() returns { nodesCreated, relationshipsCreated }
+      const updates = typeof s.updates === 'function' ? s.updates() : null;
+      if (updates) {
+        nodesCreated = updates.nodesCreated || 0;
+        relationshipsCreated = updates.relationshipsCreated || 0;
+      } else {
+        nodesCreated = (typeof s.nodesCreated === 'function' ? s.nodesCreated() : s.nodesCreated) || 0;
+        relationshipsCreated = (typeof s.relationshipsCreated === 'function' ? s.relationshipsCreated() : s.relationshipsCreated) || 0;
+      }
+    }
+    await tx.commit();
+    return { nodesCreated, relationshipsCreated };
+  } catch (error) {
+    await tx.rollback();
+    throw error;
   } finally {
     await session.close();
   }

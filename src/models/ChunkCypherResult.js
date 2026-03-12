@@ -11,7 +11,6 @@ const ChunkCypherResultSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Document',
     required: true,
-    index: true
   },
   chunkId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -61,8 +60,8 @@ const ChunkCypherResultSchema = new mongoose.Schema({
   },
   generationProvider: {
     type: String,
-    enum: ['ollama', 'huggingface'],
-    default: null
+    enum: ['ollama', 'huggingface', 'azure'],
+    default: 'azure'
   }
 }, {
   timestamps: true
